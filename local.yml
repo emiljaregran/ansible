@@ -1,0 +1,125 @@
+---
+
+- name: Setup laptop
+  hosts: localhost
+  connection: local
+  vars:
+    apt_packages_to_remove:
+      - firefox-esr
+    apt_packages:
+      - htop
+      - i3
+      - kitty
+      - mpv
+      - ncdu
+      - ranger
+      - ripgrep
+      - stow
+      - sxiv
+      - xclip
+      - zathura
+    flatpak_packages:
+      - com.brave.Browser 
+      - com.visualstudio.code
+      - com.yubico.yubioath
+      - org.gnome.Boxes
+      - org.gimp.GIMP
+      - org.mozilla.firefox
+
+  tasks:
+    # =================================================
+    # Add flatpak repositories
+    # =================================================
+    - name: Add Flathub repository
+      community.general.flatpak_remote:
+        name: flathub
+        flatpakrepo_url: https://flathub.org/repo/flathub.flatpakrepo 
+
+    # =================================================
+    # Remove packages
+    # =================================================
+    - name: Remove unwanted APT packages
+      become: true
+      ansible.builtin.apt:
+        name: "{{ apt_packages_to_remove }}"
+        state: absent
+        autoremove: true
+        purge: true
+
+    # =================================================
+    # Install packages
+    # =================================================
+    - name: Update and upgrade installed APT packages
+      become: true
+      ansible.builtin.apt:
+        upgrade: true
+        update_cache: true
+
+    - name: Install requested APT packages
+      become: true
+      ansible.builtin.apt:
+        name: "{{ apt_packages }}"
+
+    - name: Install requested Flatpak packages
+      become: true
+      community.general.flatpak:
+        name: "{{ flatpak_packages }}"
+
+    # =================================================
+    # Fonts
+    # =================================================
+    - name: Install fonts
+      vars:
+        font_path: "{{ ansible_env.HOME }}/.local/share/fonts/JetBrainsMono"
+      block:
+        - name: Create font directory
+          ansible.builtin.file:
+            path: "{{ font_path }}"
+            state: directory
+
+        - name: Get latest Nerd Fonts release information 
+          register: latest_release
+          ansible.builtin.uri:
+            url: https://api.github.com/repos/ryanoasis/nerd-fonts/releases/latest 
+            body_format: json
+            return_content: true
+
+        - name: Download JetBrainsMono font
+          ansible.builtin.unarchive:
+            src: https://github.com/ryanoasis/nerd-fonts/releases/download/{{ latest_release.json.tag_name }}/JetBrainsMono.zip
+            dest: "{{ font_path }}"
+            remote_src: true
+
+        - name: Refresh font cache
+          ansible.builtin.command: fc-cache -vf
+          changed_when: false
+
+    # =================================================
+    # Dotfiles
+    # =================================================
+    - name: Install dotfiles
+      vars:
+        dotfiles_path: "{{ ansible_env.HOME }}/.dotfiles"
+        applications:
+          - kitty
+          - i3
+          - ranger
+          - zathura
+
+      block:
+        - name: Fetch dotfiles from GitHub
+          ansible.builtin.git:
+            repo: "https://github.com/emiljaregran/dotfiles.git"
+            dest: "{{ dotfiles_path }}"
+            version: new
+
+        - name: Create symbolic links
+          ansible.builtin.command: "stow --dir={{ dotfiles_path }} --verbose=2 {{ applications | join(' ') }}"
+          register: result
+          changed_when: '"LINK: " in result.stderr'
+
+        - name: Add Git configuration
+          ansible.builtin.blockinfile:
+            path: "{{ ansible_env.HOME }}/.gitconfig"
+            block: "{{ lookup('ansible.builtin.file', '{{ dotfiles_path }}/gitconfig') }}"
+            create: true
